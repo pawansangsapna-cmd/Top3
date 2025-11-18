@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>RJ Video Call (PIN room/1008)</title>
+<title>RJ VideoCall — /room/1008</title>
 
 <!-- Firebase compat -->
 <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
@@ -13,7 +13,7 @@
   :root{--accent:#0095f6;}
   html,body{height:100%;margin:0;font-family:Arial,Helvetica,sans-serif;background:linear-gradient(135deg,#f09433,#e6683c,#dc2743);-webkit-font-smoothing:antialiased;}
   .wrap{max-width:980px;margin:10px auto;padding:12px;box-sizing:border-box;}
-  .card{background:rgba(255,255,255,0.96);border-radius:12px;padding:12px;color:#111;}
+  .card{background:rgba(255,255,255,0.97);border-radius:12px;padding:12px;color:#111;box-shadow:0 4px 20px rgba(0,0,0,0.12)}
   .header{display:flex;gap:12px;align-items:center;justify-content:space-between;margin-bottom:10px;}
   .header h2{margin:0;font-size:18px}
   .row{display:flex;gap:8px;align-items:center}
@@ -52,8 +52,8 @@
 <div class="wrap">
   <div class="card">
     <div class="header">
-      <h2>RJ VideoCall — Room format: /room/1008</h2>
-      <div style="font-size:12px;color:#555">Max 2 users</div>
+      <h2>Call — Room format: <code>/room/1008</code></h2>
+      <div style="font-size:12px;color:#555">Max 2 users — PIN = 1008</div>
     </div>
 
     <div style="display:flex;gap:8px;align-items:center;margin-bottom:8px">
@@ -93,9 +93,7 @@
 </div>
 
 <script>
-/* =========================
-  Firebase config - you provided this
-========================= */
+/* =============== Firebase config (your project) =============== */
 const firebaseConfig = {
   apiKey: "AIzaSyCdaMeWKKI7P8_sNeVbjs4eRlnufQItlJI",
   authDomain: "video-call-a9749.firebaseapp.com",
@@ -105,11 +103,10 @@ const firebaseConfig = {
   appId: "1:655086083238:web:ec14414fb08712aa696867",
   measurementId: "G-4KR499NMHS"
 };
-/* Initialize Firebase */
 firebase.initializeApp(firebaseConfig);
 const db = firebase.database();
 
-/* ===== elements ===== */
+/* =============== UI elements =============== */
 const pinInput = document.getElementById('pinInput');
 const hostBtn = document.getElementById('hostBtn');
 const joinBtn = document.getElementById('joinBtn');
@@ -130,21 +127,19 @@ const textInput = document.getElementById('textInput');
 const fileInput = document.getElementById('fileInput');
 const sendBtn = document.getElementById('sendBtn');
 
-/* ===== state ===== */
+/* =============== state =============== */
 let localStream = null;
 let pc = null;
 let roomId = null;
 let roomRef = null;
 let isHost = false;
 let connected = false;
-let myPeerId = null;
-let dataConn = null;
-let peer = null; // PeerJS optional; we'll use Firebase signalling (no PeerJS)
+let listenRefs = [];
+let facing = 'user';
 let speakerOn = true;
 let muted = false;
-let facing = 'user';
 
-/* ===== helpers ===== */
+/* =============== helper: messages =============== */
 function addMessage(content, sent=false, fileType=null){
   const el = document.createElement('div');
   el.className = 'msg ' + (sent ? 'sent' : 'received');
@@ -155,9 +150,7 @@ function addMessage(content, sent=false, fileType=null){
     } else if(fileType.startsWith('video')){
       const v = document.createElement('video'); v.src = content; v.controls = true; v.style.maxWidth='220px'; v.style.borderRadius='8px';
       el.appendChild(v);
-    } else {
-      el.textContent = '[file]';
-    }
+    } else { el.textContent = '[file]'; }
   } else {
     el.textContent = content;
   }
@@ -165,33 +158,28 @@ function addMessage(content, sent=false, fileType=null){
   messagesDiv.scrollTop = messagesDiv.scrollHeight;
 }
 
-/* ===== URL helpers for room path (/room/1008) ===== */
+/* =============== URL helpers =============== */
 function extractRoomFromPath(){
-  // look for /room/<id> in pathname
   const parts = window.location.pathname.split('/').filter(Boolean);
   for(let i=0;i<parts.length-0;i++){
-    if(parts[i].toLowerCase()==='room' && parts[i+1]){
-      return parts[i+1];
-    }
+    if(parts[i].toLowerCase()==='room' && parts[i+1]) return parts[i+1];
   }
   return null;
 }
 function makeRoomLink(id){
-  // build base (strip any trailing index.html)
   let base = location.origin + location.pathname;
   base = base.replace(/index\.html$/,'').replace(/\/$/,'');
   return base + '/room/' + encodeURIComponent(id);
 }
 
-/* ===== signaling with Firebase Realtime DB =====
-   We'll use path: rooms/{roomId}
-   Keys: meta (host present), offer (from host), answer (from guest), candidates (push list), chat (push)
-   Only two participants allowed: host + guest.
-=================================== */
-
+/* =============== start local media =============== */
 async function startLocalMedia(mode='user'){
   try{
-    const s = await navigator.mediaDevices.getUserMedia({ audio:true, video:{ facingMode: mode, width:{ideal:1280}, height:{ideal:720}, frameRate:{ideal:30} } });
+    const constraints = {
+      audio: true,
+      video: { facingMode: mode, width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } }
+    };
+    const s = await navigator.mediaDevices.getUserMedia(constraints);
     localStream = s;
     localVideo.srcObject = s;
     return s;
@@ -202,20 +190,27 @@ async function startLocalMedia(mode='user'){
   }
 }
 
+/* =============== create RTCPeerConnection =============== */
 function createPeerConnection(){
-  const config = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
+  const config = {
+    iceServers: [
+      { urls: 'stun:stun.l.google.com:19302' },
+      { urls: 'stun:global.stun.twilio.com:3478' },
+      { urls: 'stun:stun1.l.google.com:19302' }
+    ]
+  };
   const _pc = new RTCPeerConnection(config);
 
   if(localStream) localStream.getTracks().forEach(t => _pc.addTrack(t, localStream));
 
   _pc.ontrack = e => {
     remoteVideo.srcObject = e.streams[0];
+    // try to set receiver preferences or do nothing
   };
 
   _pc.onicecandidate = e => {
     if(e.candidate && roomRef){
-      // push candidate
-      const obj = { from: isHost ? 'host' : 'guest', candidate: e.candidate.toJSON() };
+      const obj = { from: isHost ? 'host' : 'guest', candidate: e.candidate.toJSON(), ts: Date.now() };
       roomRef.child('candidates').push(obj).catch(console.error);
     }
   };
@@ -223,20 +218,38 @@ function createPeerConnection(){
   _pc.onconnectionstatechange = () => {
     console.log('pc state', _pc.connectionState);
     if(_pc.connectionState === 'connected') connected = true;
-    if(_pc.connectionState === 'disconnected' || _pc.connectionState==='failed'){ /* optionally cleanup */ }
+    if(_pc.connectionState === 'disconnected' || _pc.connectionState==='failed'){
+      console.warn('PeerConnection state:', _pc.connectionState);
+    }
+  };
+
+  // attempt to set sender encoding (bitrate) for smoother video
+  _pc.onnegotiationneeded = async () => {
+    try{
+      const senders = _pc.getSenders();
+      for(const s of senders){
+        if(s.track && s.track.kind === 'video' && s.setParameters){
+          const p = s.getParameters();
+          if(!p.encodings || p.encodings.length === 0) p.encodings = [{}];
+          // set moderate max bitrate — browser may ignore if unsupported
+          p.encodings[0].maxBitrate = 600 * 1000; // 600 kbps
+          await s.setParameters(p).catch(()=>{});
+        }
+      }
+    }catch(e){ console.warn('setParameters failed', e); }
   };
 
   return _pc;
 }
 
-/* ===== Host: create room and write offer ===== */
+/* =============== host flow =============== */
 hostBtn.addEventListener('click', async ()=>{
   try{
     roomId = pinInput.value.trim();
     if(!roomId){ alert('Enter room id (1008)'); return; }
     isHost = true;
 
-    // check if room already has meta (host present)
+    // check if room exists
     const metaSnap = await db.ref('rooms/'+roomId+'/meta').get();
     if(metaSnap.exists()){
       alert('Room already exists. If you want to join, use Join.');
@@ -246,26 +259,31 @@ hostBtn.addEventListener('click', async ()=>{
     await startLocalMedia('user');
     pc = createPeerConnection();
 
-    // write host meta
     roomRef = db.ref('rooms/'+roomId);
     await roomRef.child('meta').set({ host: true, createdAt: Date.now() });
 
-    // listen for guest answer
-    roomRef.child('answer').on('value', async snap=>{
+    // listen chat immediately
+    listenChat();
+
+    // answer listener (guest will set answer)
+    const ansRef = roomRef.child('answer');
+    const ansHandler = ansRef.on('value', async snap=>{
       const ans = snap.val();
       if(ans && pc && pc.signalingState !== 'closed'){
-        console.log('Received answer, setting remote description');
-        await pc.setRemoteDescription(new RTCSessionDescription(ans));
+        try{ await pc.setRemoteDescription(new RTCSessionDescription(ans)); console.log('Host set remote answer'); }catch(e){ console.warn(e); }
       }
     });
+    listenRefs.push({ref: ansRef, handler: ansHandler});
 
-    // listen for guest ice candidates
-    roomRef.child('candidates').on('child_added', async snap=>{
+    // listen guest candidates
+    const candRef = roomRef.child('candidates');
+    const candHandler = candRef.on('child_added', async snap=>{
       const val = snap.val();
       if(val && val.from === 'guest' && val.candidate){
         try{ await pc.addIceCandidate(val.candidate); }catch(e){ console.warn('addIce err', e); }
       }
     });
+    listenRefs.push({ref: candRef, handler: candHandler});
 
     // create offer
     const offer = await pc.createOffer();
@@ -279,40 +297,30 @@ hostBtn.addEventListener('click', async ()=>{
   }
 });
 
-/* ===== Join as guest ===== */
+/* =============== join flow =============== */
 joinBtn.addEventListener('click', async ()=>{
   try{
     roomId = pinInput.value.trim();
     if(!roomId){ alert('Enter room id (1008)'); return; }
 
-    // check room exists and has offer
     roomRef = db.ref('rooms/'+roomId);
     const metaSnap = await roomRef.child('meta').get();
-    if(!metaSnap.exists()){
-      alert('Room not found. Ask host to create the room first.');
-      return;
-    }
-    // check if already guest joined
-    const guestSnap = await roomRef.child('meta/guestJoined').get();
-    if(guestSnap.exists() && guestSnap.val() === true){
-      alert('Room already full.');
-      return;
-    }
+    if(!metaSnap.exists()){ alert('Room not found. Ask host to create the room first.'); return; }
 
-    // start media locally
+    // check if guest already joined
+    const guestSnap = await roomRef.child('meta/guestJoined').get();
+    if(guestSnap.exists() && guestSnap.val() === true){ alert('Room already full.'); return; }
+
     await startLocalMedia('user');
     pc = createPeerConnection();
 
     // read offer
     const offerSnap = await roomRef.child('offer').get();
-    if(!offerSnap.exists()){
-      alert('Offer not available yet. Host may not have created offer.');
-      return;
-    }
+    if(!offerSnap.exists()){ alert('Offer not available yet. Host may not have created offer.'); return; }
     const offer = offerSnap.val();
     await pc.setRemoteDescription(new RTCSessionDescription(offer));
 
-    // create and set answer
+    // create answer
     const answer = await pc.createAnswer();
     await pc.setLocalDescription(answer);
     await roomRef.child('answer').set(answer.toJSON());
@@ -320,42 +328,42 @@ joinBtn.addEventListener('click', async ()=>{
     // mark guest joined
     await roomRef.child('meta/guestJoined').set(true);
 
-    // listen for host ice candidates
-    roomRef.child('candidates').on('child_added', async snap=>{
+    // listen host candidates
+    const candRef = roomRef.child('candidates');
+    const candHandler = candRef.on('child_added', async snap=>{
       const val = snap.val();
       if(val && val.from === 'host' && val.candidate){
         try{ await pc.addIceCandidate(val.candidate); }catch(e){ console.warn('addIce err', e); }
       }
     });
+    listenRefs.push({ref: candRef, handler: candHandler});
 
-    // listen for chat messages
     listenChat();
-
     roomLinkInput.value = makeRoomLink(roomId);
-    alert('Joined room. You and host should connect shortly.');
+    alert('Joined room. Connecting...');
   }catch(err){
     console.error('Join error', err); alert('Error joining: ' + (err.message||err));
   }
 });
 
-/* ===== chat listeners & send ===== */
+/* =============== chat =============== */
 function listenChat(){
   if(!roomRef) return;
-  roomRef.child('chat').on('child_added', snap=>{
+  const chatRef = roomRef.child('chat');
+  const handler = chatRef.on('child_added', snap=>{
     const val = snap.val();
     if(!val) return;
-    if(val.type === 'text'){
-      addMessage(val.content, val.sender === getLocalRole());
-    } else if(val.type === 'file'){
-      addMessage(val.data, val.sender === getLocalRole(), val.fileType);
-    }
+    const mine = (val.sender === (isHost ? 'host' : 'guest'));
+    if(val.type === 'text') addMessage(val.content, mine);
+    else if(val.type === 'file') addMessage(val.data, mine, val.fileType);
   });
+  listenRefs.push({ref: chatRef, handler});
 }
 async function sendChat(){
   const txt = textInput.value.trim();
   const f = fileInput.files[0];
   if(txt){
-    const obj = { type:'text', content: txt, sender: getLocalRole(), ts: Date.now() };
+    const obj = { type:'text', content: txt, sender: isHost? 'host':'guest', ts: Date.now() };
     await roomRef.child('chat').push(obj);
     addMessage(txt, true);
     textInput.value = '';
@@ -366,7 +374,7 @@ async function sendChat(){
     const reader = new FileReader();
     reader.onload = async ()=> {
       const dataUrl = reader.result;
-      const obj = { type:'file', data: dataUrl, fileType: f.type, sender: getLocalRole(), ts: Date.now() };
+      const obj = { type:'file', data: dataUrl, fileType: f.type, sender: isHost? 'host':'guest', ts: Date.now() };
       await roomRef.child('chat').push(obj);
       addMessage(dataUrl, true, f.type);
     };
@@ -377,9 +385,7 @@ async function sendChat(){
 sendBtn.addEventListener('click', sendChat);
 textInput.addEventListener('keydown', e=>{ if(e.key==='Enter') sendChat(); });
 
-function getLocalRole(){ return isHost ? 'host' : 'guest'; }
-
-/* ===== misc controls ===== */
+/* =============== controls =============== */
 muteBtn.addEventListener('click', ()=>{
   if(!localStream) return;
   muted = !muted;
@@ -388,20 +394,15 @@ muteBtn.addEventListener('click', ()=>{
 });
 switchBtn.addEventListener('click', async ()=>{
   if(!localStream) return;
-  // toggle facing mode
   const track = localStream.getVideoTracks()[0];
   const cur = (track.getSettings && track.getSettings().facingMode) || facing;
   const newFacing = cur === 'user' ? 'environment' : 'user';
-  // stop current
   localStream.getTracks().forEach(t=>t.stop());
   facing = newFacing;
   await startLocalMedia(facing);
-  // replace track in pc
   if(pc){
     const sender = pc.getSenders().find(s => s.track && s.track.kind === 'video');
-    if(sender && localStream.getVideoTracks()[0]){
-      sender.replaceTrack(localStream.getVideoTracks()[0]);
-    }
+    if(sender && localStream.getVideoTracks()[0]) sender.replaceTrack(localStream.getVideoTracks()[0]);
   }
 });
 speakerBtn.addEventListener('click', ()=> {
@@ -412,14 +413,18 @@ speakerBtn.addEventListener('click', ()=> {
 endBtn.addEventListener('click', async ()=>{
   try{ if(pc) pc.close(); }catch(e){}
   try{ if(localStream) localStream.getTracks().forEach(t=>t.stop()); }catch(e){}
-  // cleanup db nodes only if host
+  // cleanup DB only if host (removes room)
   if(isHost && roomRef){
-    try{ await roomRef.remove(); }catch(e){}
+    try{ await roomRef.remove(); }catch(e){ console.warn('room remove failed', e); }
+  } else if(roomRef){
+    try{ await roomRef.child('meta/guestJoined').remove(); }catch(e){}
   }
+  // remove listeners
+  listenRefs.forEach(o=> { try{ if(o.ref && o.handler) o.ref.off('child_added', o.handler); }catch(e){} });
   setTimeout(()=> location.reload(),200);
 });
 
-/* ===== PIP swap & draggable ===== */
+/* =============== PIP swap & drag =============== */
 localVideo.addEventListener('click', ()=>{
   const isMin = localVideo.classList.contains('min');
   if(isMin){ localVideo.classList.remove('min'); remoteVideo.classList.remove('small'); }
@@ -447,49 +452,47 @@ window.addEventListener('pointermove', e=>{
 });
 window.addEventListener('pointerup', ()=>dragging=false);
 
-/* ===== listen for remote offer (host created) or answer (guest created) ===== */
-async function watchRoomForOffer(){
+/* =============== watch offer (guest fallback) =============== */
+async function watchOfferAndAutoAnswer(){
   if(!roomRef) return;
-  roomRef.child('offer').on('value', async snap=>{
+  const offerRef = roomRef.child('offer');
+  const handler = offerRef.on('value', async snap=>{
     const offer = snap.val();
     if(offer && !isHost && pc){
       try{
         await pc.setRemoteDescription(new RTCSessionDescription(offer));
-      }catch(e){ console.warn('setRemote offer err', e); }
+        const answer = await pc.createAnswer();
+        await pc.setLocalDescription(answer);
+        await roomRef.child('answer').set(answer.toJSON());
+        await roomRef.child('meta/guestJoined').set(true);
+      }catch(e){ console.warn('watchOffer error', e); }
     }
   });
+  listenRefs.push({ref: offerRef, handler});
 }
 
-/* ===== when a call is established: add tracks & update candidate listeners ===== */
-function setupAfterLocalAndPC(){
-  // listen for incoming remote tracks already set in createPeerConnection
-  // ensure candidates handling already bound in createPeerConnection
-}
-
-/* ===== room link copy ===== */
+/* =============== copy link =============== */
 copyLinkBtn.addEventListener('click', ()=>{
-  if(roomLinkInput.value) navigator.clipboard.writeText(roomLinkInput.value).then(()=> { copyLinkBtn.textContent='Copied'; setTimeout(()=>copyLinkBtn.textContent='Copy Link',1200); });
+  if(roomLinkInput.value) navigator.clipboard.writeText(roomLinkInput.value).then(()=> {
+    copyLinkBtn.textContent='Copied';
+    setTimeout(()=> copyLinkBtn.textContent='Copy Link',1200);
+  });
 });
 
-/* ===== page load: auto-prefill from /room/<id> ===== */
+/* =============== init from URL =============== */
 (function initFromUrl(){
   const r = extractRoomFromPath();
   if(r){
     pinInput.value = r;
-    // show link as canonical
     roomLinkInput.value = makeRoomLink(r);
   }
 })();
 
-/* ===== listen for realtime answer when host was creating (already done in host flow) ===== */
-/* optional: also call listenChat for host once room exists */
-roomLinkInput.value = roomLinkInput.value || '';
-
-/* ===== safety: cleanup on unload (guest flags remain) ===== */
-window.addEventListener('beforeunload', async ()=> {
+/* =============== cleanup on unload =============== */
+window.addEventListener('beforeunload', async ()=>{
   try{ if(!isHost && roomRef) await roomRef.child('meta/guestJoined').remove(); }catch(e){}
 });
 
 </script>
 </body>
-</html>
+  </html>
