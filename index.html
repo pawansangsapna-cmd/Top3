@@ -1,0 +1,487 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>PIN WebRTC + Chat (Firebase)</title>
+
+<!-- Firebase SDKs -->
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-database-compat.js"></script>
+
+<style>
+  :root{ --accent:#0095f6; --bg: linear-gradient(135deg,#f09433,#e6683c,#dc2743); }
+  html,body{height:100%;margin:0;font-family:Inter,Arial;background:var(--bg);-webkit-font-smoothing:antialiased;}
+  .container{max-width:980px;margin:10px auto;padding:12px;box-sizing:border-box;}
+  .card{background:rgba(255,255,255,0.95);border-radius:12px;padding:12px;color:#111;}
+  .header{display:flex;gap:12px;align-items:center;justify-content:space-between;margin-bottom:10px;}
+  .header h2{margin:0;font-size:18px}
+  .row{display:flex;gap:8px;align-items:center}
+  input[type="text"], input[type="number"]{padding:10px;border-radius:8px;border:1px solid #ddd;flex:1}
+  button{padding:10px 12px;border-radius:8px;border:none;background:var(--accent);color:white;cursor:pointer;font-weight:600}
+  /* Video area */
+  .video-wrap{position:relative;margin-top:10px;height:60vh;border-radius:10px;overflow:hidden;background:#000}
+  video{width:100%;height:100%;object-fit:cover;background:#000}
+  #localVideo{position:absolute;width:120px;height:160px;border-radius:10px;right:16px;bottom:120px;border:2px solid rgba(255,255,255,0.9);cursor:pointer;z-index:40;object-fit:cover;touch-action:none}
+  #localVideo.min { width:84px;height:112px; }
+  #remoteVideo.small{ position:absolute; right:16px; bottom:120px; width:140px; height:190px; z-index:30; border-radius:10px; border:2px solid rgba(255,255,255,0.9); object-fit:cover; }
+
+  /* Controls */
+  .controls{display:flex;justify-content:center;gap:10px;margin-top:8px}
+  .controls button{flex:0 0 120px;padding:10px;border-radius:999px;background:rgba(0,0,0,0.6);color:#fff}
+
+  /* Chat */
+  .chat{margin-top:12px;background:rgba(255,255,255,0.98);border-radius:10px;padding:8px;display:flex;flex-direction:column;height:28vh}
+  .messages{flex:1;overflow:auto;padding:6px;display:flex;flex-direction:column;gap:8px}
+  .msg{max-width:72%;padding:8px;border-radius:10px;background:#f1f1f1;color:#111}
+  .msg.sent{align-self:flex-end;background:#dcf8c6}
+  .chat-input{display:flex;gap:8px;margin-top:8px;align-items:center}
+  .chat-input input[type="text"]{flex:1;padding:10px;border-radius:8px;border:1px solid #ddd}
+  .file-btn{padding:8px 10px;border-radius:8px;background:var(--accent);color:#fff;cursor:pointer}
+  .small-note{font-size:12px;color:#666;margin-top:6px}
+
+  /* responsive */
+  @media(max-width:720px){
+    .video-wrap{height:55vh}
+    #localVideo{right:10px;bottom:100px}
+  }
+</style>
+</head>
+<body>
+  <div class="container">
+    <div class="card">
+      <div class="header">
+        <h2>Secure PIN Call + Chat</h2>
+        <div class="row">
+          <span style="font-size:13px;color:#555">PIN (room):</span>
+          <input id="pinInput" type="number" placeholder="4-digit PIN" style="width:110px">
+          <button id="hostBtn">Host (create)</button>
+          <button id="joinBtn">Join</button>
+        </div>
+      </div>
+
+      <div style="display:flex;gap:10px;align-items:center;margin-bottom:8px">
+        <input id="roomLink" type="text" placeholder="Room link will show here" readonly>
+        <button id="copyLinkBtn">Copy Link</button>
+      </div>
+
+      <div class="video-wrap" id="videoWrap">
+        <video id="remoteVideo" autoplay playsinline></video>
+        <video id="localVideo" autoplay muted playsinline></video>
+      </div>
+
+      <div class="controls">
+        <button id="muteBtn">🎤 Mute</button>
+        <button id="switchBtn">🔄 Switch</button>
+        <button id="speakerBtn">🔊 Speaker</button>
+        <button id="endBtn" style="background:#ff3b30">❌ End</button>
+      </div>
+
+      <div class="chat">
+        <div class="messages" id="messages"></div>
+        <div class="chat-input">
+          <input type="text" id="textInput" placeholder="Type a message...">
+          <label class="file-btn">📎
+            <input id="fileInput" type="file" accept="image/*,video/*" style="display:none">
+          </label>
+          <button id="sendBtn" style="background:var(--accent);color:#fff">Send</button>
+        </div>
+        <div class="small-note">Files limited to 6 MB. For larger files use Storage (advanced).</div>
+      </div>
+    </div>
+  </div>
+
+<script>
+/* ====== IMPORTANT: Replace with your Firebase config ======
+  Create Firebase project -> Realtime Database -> set rules for testing.
+  Copy your firebaseConfig from Project Settings -> SDK -> Config
+========================================================== */
+const firebaseConfig = {
+  // --- REPLACE THESE ---
+  apiKey: "YOUR_API_KEY",
+  authDomain: "YOUR_PROJECT.firebaseapp.com",
+  databaseURL: "https://YOUR_PROJECT.firebaseio.com",
+  projectId: "YOUR_PROJECT_ID",
+  storageBucket: "YOUR_PROJECT.appspot.com",
+  messagingSenderId: "SENDER_ID",
+  appId: "APP_ID"
+};
+/* ========================================================= */
+
+if (!firebaseConfig || !firebaseConfig.apiKey) {
+  alert("Please open the code and paste your Firebase config into firebaseConfig.");
+}
+
+// Initialize Firebase
+firebase.initializeApp(firebaseConfig);
+const db = firebase.database();
+
+/* ----------------- UI elements ----------------- */
+const pinInput = document.getElementById('pinInput');
+const hostBtn = document.getElementById('hostBtn');
+const joinBtn = document.getElementById('joinBtn');
+const roomLink = document.getElementById('roomLink');
+const copyLinkBtn = document.getElementById('copyLinkBtn');
+
+const localVideo = document.getElementById('localVideo');
+const remoteVideo = document.getElementById('remoteVideo');
+
+const muteBtn = document.getElementById('muteBtn');
+const switchBtn = document.getElementById('switchBtn');
+const speakerBtn = document.getElementById('speakerBtn');
+const endBtn = document.getElementById('endBtn');
+
+const messagesDiv = document.getElementById('messages');
+const textInput = document.getElementById('textInput');
+const fileInput = document.getElementById('fileInput');
+const sendBtn = document.getElementById('sendBtn');
+
+/* ----------------- state ----------------- */
+let localStream = null;
+let pc = null;
+let roomRef = null;
+let roomId = null;
+let isHost = false;
+let connOpen = false;
+let speakerOn = true;
+let muted = false;
+let connected = false; // whether call established
+let remoteSmall = false;
+
+/* ---------- helper: append chat message ---------- */
+function addMessage(content, sent=false, fileType=null){
+  const el = document.createElement('div');
+  el.className = 'msg ' + (sent ? 'sent' : 'received');
+  if(fileType){
+    if(fileType.startsWith('image')){
+      const img = document.createElement('img');
+      img.src = content;
+      img.style.maxWidth = '220px';
+      img.style.borderRadius = '8px';
+      el.appendChild(img);
+    } else if(fileType.startsWith('video')){
+      const v = document.createElement('video');
+      v.src = content; v.controls = true; v.style.maxWidth = '220px'; v.style.borderRadius = '8px';
+      el.appendChild(v);
+    } else {
+      el.textContent = '[file]';
+    }
+  } else {
+    el.textContent = content;
+  }
+  messagesDiv.appendChild(el);
+  messagesDiv.scrollTop = messagesDiv.scrollHeight;
+}
+
+/* ---------- get local media ---------- */
+async function startLocalMedia(facing='user'){
+  try{
+    const constraints = { audio: true, video: { facingMode: facing, width:{ideal:1280}, height:{ideal:720}, frameRate:{ideal:30}} };
+    const stream = await navigator.mediaDevices.getUserMedia(constraints);
+    localStream = stream;
+    localVideo.srcObject = stream;
+    return stream;
+  } catch(err){
+    console.error("getUserMedia error", err);
+    alert("Camera/Mic access required: " + (err.message||err));
+    throw err;
+  }
+}
+
+/* ---------- create RTCPeerConnection ---------- */
+function createPeerConnection(){
+  const config = { iceServers: [{urls:'stun:stun.l.google.com:19302'}] };
+  const _pc = new RTCPeerConnection(config);
+
+  // add local tracks
+  if(localStream){
+    localStream.getTracks().forEach(t => _pc.addTrack(t, localStream));
+  }
+
+  // when remote track arrives
+  _pc.ontrack = event => {
+    remoteVideo.srcObject = event.streams[0];
+  };
+
+  // ICE candidates -> push to Firebase
+  _pc.onicecandidate = event => {
+    if(event.candidate){
+      const cand = event.candidate.toJSON();
+      roomRef.child('candidates').push({from: isHost ? 'host' : 'guest', candidate: cand});
+    }
+  };
+
+  _pc.onconnectionstatechange = () => {
+    console.log('pc state', _pc.connectionState);
+    if(_pc.connectionState === 'connected'){
+      connected = true;
+    }
+  };
+
+  return _pc;
+}
+
+/* ---------- Host room creation ---------- */
+hostBtn.addEventListener('click', async () => {
+  roomId = pinInput.value?.trim();
+  if(!roomId || roomId.length < 3){ alert('Enter 3-6 digit PIN'); return; }
+
+  // create room node if not exists
+  const roomPath = 'rooms/' + roomId;
+  roomRef = db.ref(roomPath);
+
+  // check if someone already host (room exists with host present)
+  const snap = await roomRef.child('meta').get();
+  if(snap.exists()){
+    alert('Room already exists. If you want to join as second user, use Join.');
+    return;
+  }
+
+  isHost = true;
+  await startLocalMedia('user');
+  pc = createPeerConnection();
+
+  // mark room meta
+  await roomRef.child('meta').set({host: true, createdAt: Date.now()});
+  // listen for guest answer + ICE
+  roomRef.child('answer').on('value', async snap => {
+    const ans = snap.val();
+    if(ans && ans.type === 'answer'){
+      console.log('Got answer, setting remote description');
+      await pc.setRemoteDescription(new RTCSessionDescription(ans));
+    }
+  });
+
+  roomRef.child('candidates').on('child_added', async s => {
+    const val = s.val();
+    if(val && val.from === 'guest' && val.candidate){
+      try{ await pc.addIceCandidate(val.candidate); }catch(e){ console.warn('addIce err', e); }
+    }
+  });
+
+  // create offer, set local, store offer in DB
+  const offer = await pc.createOffer();
+  await pc.setLocalDescription(offer);
+  await roomRef.child('offer').set(offer.toJSON());
+
+  // listen messages
+  listenMessages();
+
+  // setup room messages (signaling done)
+  roomLink.value = location.origin + location.pathname + '?pin=' + encodeURIComponent(roomId);
+  connected = false;
+  connOpen = true;
+  alert('Room created. Share PIN: ' + roomId);
+});
+
+/* ---------- Join (guest) ---------- */
+joinBtn.addEventListener('click', async () => {
+  roomId = pinInput.value?.trim();
+  if(!roomId || roomId.length < 3){ alert('Enter 3-6 digit PIN'); return; }
+  const roomPath = 'rooms/' + roomId;
+  roomRef = db.ref(roomPath);
+
+  // check if host exists
+  const snap = await roomRef.child('meta').get();
+  if(!snap.exists()){
+    alert('Room not found. Ask host to create room first.');
+    return;
+  }
+
+  // but ensure room not already full
+  const guestSnap = await roomRef.child('meta/guestJoined').get();
+  if(guestSnap.exists() && guestSnap.val() === true){
+    alert('Room full (already connected).');
+    return;
+  }
+
+  isHost = false;
+  await startLocalMedia('user');
+  pc = createPeerConnection();
+
+  // read offer from DB
+  const offerSnap = await roomRef.child('offer').get();
+  if(!offerSnap.exists()){
+    alert('Offer not available yet. Host may not have created offer.');
+    return;
+  }
+  const offer = offerSnap.val();
+  await pc.setRemoteDescription(new RTCSessionDescription(offer));
+
+  const answer = await pc.createAnswer();
+  await pc.setLocalDescription(answer);
+  await roomRef.child('answer').set(answer.toJSON());
+  // mark guest joined
+  await roomRef.child('meta/guestJoined').set(true);
+
+  // listen for ICE candidates from host
+  roomRef.child('candidates').on('child_added', async s => {
+    const val = s.val();
+    if(val && val.from === 'host' && val.candidate){
+      try{ await pc.addIceCandidate(val.candidate); }catch(e){ console.warn('addIce err', e); }
+    }
+  });
+
+  // push guest ICE candidates
+  pc.onicecandidate = event => {
+    if(event.candidate){
+      roomRef.child('candidates').push({from: 'guest', candidate: event.candidate.toJSON()});
+    }
+  };
+
+  // listen messages
+  listenMessages();
+
+  roomLink.value = location.origin + location.pathname + '?pin=' + encodeURIComponent(roomId);
+  connOpen = true;
+});
+
+/* ---------- Listen chat/messages in room ---------- */
+function listenMessages(){
+  if(!roomRef) return;
+  roomRef.child('chat').on('child_added', snap => {
+    const val = snap.val();
+    if(!val) return;
+    if(val.type === 'text'){
+      addMessage(val.content, val.sender === (isHost ? 'host' : 'guest'));
+    } else if(val.type === 'file'){
+      // incoming file base64
+      const sender = val.sender;
+      addMessage(val.data, sender === (isHost ? 'host' : 'guest'), val.fileType);
+    }
+  });
+}
+
+/* ---------- send text/file to chat ---------- */
+sendBtn.addEventListener('click', sendChat);
+textInput.addEventListener('keydown', e => { if(e.key === 'Enter') sendChat(); });
+
+async function sendChat(){
+  const txt = textInput.value.trim();
+  const file = fileInput.files[0];
+  if(txt){
+    // push text
+    const obj = { type:'text', content: txt, sender: isHost ? 'host' : 'guest', ts: Date.now() };
+    await roomRef.child('chat').push(obj);
+    addMessage(txt, true);
+    textInput.value = '';
+  }
+  if(file){
+    const MAX = 6 * 1024 * 1024; // 6MB
+    if(file.size > MAX){
+      alert('File too large. Max 6 MB.');
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = async () => {
+      const dataUrl = reader.result;
+      const obj = { type:'file', data: dataUrl, fileType: file.type, sender: isHost ? 'host' : 'guest', ts: Date.now() };
+      await roomRef.child('chat').push(obj);
+      addMessage(dataUrl, true, file.type);
+    };
+    reader.readAsDataURL(file);
+    fileInput.value = '';
+  }
+}
+
+/* ---------- UI Controls ---------- */
+muteBtn.addEventListener('click', ()=>{
+  if(!localStream) return;
+  muted = !muted;
+  localStream.getAudioTracks().forEach(t=> t.enabled = !muted);
+  muteBtn.textContent = muted ? '🔇 Unmute' : '🎤 Mute';
+});
+
+switchBtn.addEventListener('click', async ()=>{
+  if(!localStream) return;
+  // toggle facing
+  const tracks = localStream.getVideoTracks();
+  const settings = tracks[0].getSettings();
+  const newFacing = settings.facingMode === 'environment' ? 'user' : 'environment';
+  // stop old
+  localStream.getTracks().forEach(t=> t.stop());
+  // get new
+  await startLocalMedia(newFacing);
+  // replace track in pc
+  if(pc){
+    const sender = pc.getSenders().find(s => s.track && s.track.kind === 'video');
+    if(sender && localStream.getVideoTracks()[0]){
+      sender.replaceTrack(localStream.getVideoTracks()[0]);
+    }
+  }
+});
+
+speakerBtn.addEventListener('click', ()=>{
+  speakerOn = !speakerOn;
+  remoteVideo.muted = !speakerOn;
+  speakerBtn.textContent = speakerOn ? '🔊 Speaker' : '🔈 Off';
+});
+
+endBtn.addEventListener('click', async ()=>{
+  if(roomRef){
+    try{ await roomRef.child('meta').remove(); }catch(e){}
+    try{ await roomRef.child('offer').remove(); }catch(e){}
+    try{ await roomRef.child('answer').remove(); }catch(e){}
+    try{ await roomRef.child('candidates').remove(); }catch(e){}
+  }
+  if(pc) pc.close();
+  if(localStream) localStream.getTracks().forEach(t=>t.stop());
+  // reload to reset
+  setTimeout(()=> location.reload(), 200);
+});
+
+/* ---------- PIP swap on tap + draggable local ---------- */
+localVideo.addEventListener('click', ()=>{
+  const isMin = localVideo.classList.contains('min');
+  if(isMin){
+    localVideo.classList.remove('min');
+    remoteVideo.classList.remove('small');
+  } else {
+    localVideo.classList.add('min');
+    remoteVideo.classList.add('small');
+  }
+});
+
+// allow clicking remote to swap as well
+remoteVideo.addEventListener('click', ()=>{
+  const isSmall = remoteVideo.classList.contains('small');
+  if(isSmall){
+    remoteVideo.classList.remove('small');
+    localVideo.classList.remove('min');
+  } else {
+    remoteVideo.classList.add('small');
+    localVideo.classList.add('min');
+  }
+});
+
+// draggable local video (touch + mouse)
+let dragging = false, offset = {x:0,y:0};
+localVideo.addEventListener('pointerdown', e => {
+  dragging = true;
+  localVideo.setPointerCapture(e.pointerId);
+  const rect = localVideo.getBoundingClientRect();
+  offset.x = e.clientX - rect.left;
+  offset.y = e.clientY - rect.top;
+});
+window.addEventListener('pointermove', e => {
+  if(!dragging) return;
+  const x = e.clientX - offset.x;
+  const y = e.clientY - offset.y;
+  localVideo.style.left = Math.max(8, Math.min(window.innerWidth - localVideo.offsetWidth - 8, x)) + 'px';
+  localVideo.style.top = Math.max(80, Math.min(window.innerHeight - localVideo.offsetHeight - 8, y)) + 'px';
+});
+window.addEventListener('pointerup', e => { dragging=false; });
+
+/* ---------- copy link ---------- */
+copyLinkBtn.addEventListener('click', ()=>{
+  if(roomLink.value) navigator.clipboard.writeText(roomLink.value).then(()=>{ copyLinkBtn.textContent='Copied'; setTimeout(()=> copyLinkBtn.textContent='Copy',1200); });
+});
+
+/* ---------- cleanup on unload ---------- */
+window.addEventListener('beforeunload', async () => {
+  try{ if(roomRef && isHost) await roomRef.child('meta').remove(); }catch(e){}
+});
+
+</script>
+</body>
+</html>
